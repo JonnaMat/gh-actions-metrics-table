@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub Actions Metrics Table",
+  "version": "0.1.0",
+  "description": "Aggregates the Params/Metrics tables from workflow-run step summaries into one comparison table on the Actions page.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
