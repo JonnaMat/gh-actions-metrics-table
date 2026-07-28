@@ -5,7 +5,7 @@
   "use strict";
 
   const PANEL_ID = "gamt-panel";
-  const FETCH_CONCURRENCY = 4;
+  const FETCH_CONCURRENCY = 8;
   const MAX_LIST_PAGES = 20;
 
   const rawStorage =
@@ -103,29 +103,39 @@
     return [...runs.values()];
   }
 
-  // the DOM only shows one list page; fetch the rest (keeping any filters)
+  async function fetchListPage(page) {
+    const params = new URLSearchParams(location.search);
+    params.set("page", String(page));
+    const res = await fetch(`${location.pathname}?${params}`, { credentials: "include" });
+    if (!res.ok) return [];
+    return collectRuns(new DOMParser().parseFromString(await res.text(), "text/html"));
+  }
+
+  // the DOM only shows one list page; fetch the rest in parallel (keeping any
+  // filters), page count read from the pagination nav
   async function collectAllPages(firstPage) {
+    const nav = document.querySelector('nav[aria-label*="agination"]') || document;
+    let last = 1;
+    for (const a of nav.querySelectorAll('a[href*="page="]')) {
+      const m = (a.getAttribute("href") || "").match(/[?&]page=(\d+)/);
+      if (m) last = Math.max(last, +m[1]);
+    }
+    last = Math.min(last, MAX_LIST_PAGES);
+    const current = new URLSearchParams(location.search).get("page") || "1";
+    const pages = [];
+    for (let p = 1; p <= last; p++) if (String(p) !== current) pages.push(p);
+    const fetched = await Promise.all(pages.map((p) => fetchListPage(p).catch(() => [])));
     const runs = [...firstPage];
     const seen = new Set(runs.map((r) => r.id));
-    const params = new URLSearchParams(location.search);
-    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
-      params.set("page", String(page));
-      let doc;
-      try {
-        const res = await fetch(`${location.pathname}?${params}`, { credentials: "include" });
-        if (!res.ok) break;
-        doc = new DOMParser().parseFromString(await res.text(), "text/html");
-      } catch {
-        break;
-      }
-      const found = collectRuns(doc).filter((r) => !seen.has(r.id));
-      if (!found.length && page > 1) break;
-      for (const r of found) {
-        seen.add(r.id);
-        runs.push(r);
+    for (const list of fetched) {
+      for (const r of list) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          runs.push(r);
+        }
       }
     }
-    return runs;
+    return runs.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   }
 
   const isTerminal = (status) => /success|fail|cancel|skip|completed|neutral|timed.out/i.test(status);
@@ -160,12 +170,8 @@
     }
   }
 
-  async function getRunData(repo, run, force) {
+  async function getRunData(repo, run) {
     const key = cacheKey(repo, run.id);
-    if (!force) {
-      const got = await storage.get(key);
-      if (got[key]) return got[key];
-    }
     const summary = await fetchRunSummary(run);
     const data = {
       params: summary?.params || {},
@@ -586,21 +592,38 @@
       rerender(false);
 
       const allRuns = await collectAllPages(runs);
-      for (const run of allRuns) {
-        if (!rows.some((r) => r.run.id === run.id)) {
-          rows.push({ run, data: { params: {}, metrics: {}, hasSummary: false } });
-        }
+      rows = allRuns.map(
+        (run) =>
+          rows.find((r) => r.run.id === run.id) ??
+          { run, data: { params: {}, metrics: {}, hasSummary: false } }
+      );
+
+      // apply the cache in one batched read; fetch only the misses
+      const forceFetch = init.refetch === true;
+      init.refetch = false;
+      const cached = forceFetch ? {} : await storage.get(allRuns.map((r) => cacheKey(repo, r.id)));
+      for (const row of rows) {
+        const hit = cached[cacheKey(repo, row.run.id)];
+        if (hit) row.data = hit;
       }
       rerender(false);
 
-      const forceFetch = init.refetch === true;
-      init.refetch = false;
-      await mapLimit(allRuns, FETCH_CONCURRENCY, async (run) => {
-        const data = await getRunData(repo, run, forceFetch);
-        const row = rows.find((r) => r.run.id === run.id);
-        if (row) row.data = data;
-        rerender(false);
+      // rebuilding the table per completed fetch is expensive — coalesce
+      let renderQueued = false;
+      const scheduleRender = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        setTimeout(() => {
+          renderQueued = false;
+          rerender(false);
+        }, 150);
+      };
+      const pending = rows.filter((r) => !cached[cacheKey(repo, r.run.id)]);
+      await mapLimit(pending, FETCH_CONCURRENCY, async (row) => {
+        row.data = await getRunData(repo, row.run);
+        scheduleRender();
       });
+      rerender(false);
     } finally {
       building = false;
     }
