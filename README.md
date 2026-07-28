@@ -2,8 +2,9 @@
 
 Chrome extension: on a repo's Actions list page, aggregates each run's
 step-summary tables (any two-column table headed `param | value` or
-`metric | value`) into one sortable comparison table above the run list.
-Uses your GitHub session — no token.
+`metric | value`) into one sortable comparison table above the run list —
+runs from all list pages (up to 20, respecting active filters). Uses your
+GitHub session — no token.
 
 ## Install
 

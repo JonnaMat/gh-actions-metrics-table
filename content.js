@@ -6,6 +6,7 @@
 
   const PANEL_ID = "gamt-panel";
   const FETCH_CONCURRENCY = 4;
+  const MAX_LIST_PAGES = 20;
 
   const rawStorage =
     typeof chrome !== "undefined" && chrome.storage && chrome.storage.local
@@ -76,9 +77,9 @@
     return m ? `${m[1]}/${m[2]}` : null;
   }
 
-  function collectRuns() {
+  function collectRuns(root = document) {
     const runs = new Map();
-    for (const a of document.querySelectorAll('a[href*="/actions/runs/"]')) {
+    for (const a of root.querySelectorAll('a[href*="/actions/runs/"]')) {
       if (a.closest(`#${PANEL_ID}`)) continue;
       const m = (a.getAttribute("href") || "").match(/^\/[^/]+\/[^/]+\/actions\/runs\/(\d+)$/);
       if (!m) continue;
@@ -100,6 +101,31 @@
       });
     }
     return [...runs.values()];
+  }
+
+  // the DOM only shows one list page; fetch the rest (keeping any filters)
+  async function collectAllPages(firstPage) {
+    const runs = [...firstPage];
+    const seen = new Set(runs.map((r) => r.id));
+    const params = new URLSearchParams(location.search);
+    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
+      params.set("page", String(page));
+      let doc;
+      try {
+        const res = await fetch(`${location.pathname}?${params}`, { credentials: "include" });
+        if (!res.ok) break;
+        doc = new DOMParser().parseFromString(await res.text(), "text/html");
+      } catch {
+        break;
+      }
+      const found = collectRuns(doc).filter((r) => !seen.has(r.id));
+      if (!found.length && page > 1) break;
+      for (const r of found) {
+        seen.add(r.id);
+        runs.push(r);
+      }
+    }
+    return runs;
   }
 
   const isTerminal = (status) => /success|fail|cancel|skip|completed|neutral|timed.out/i.test(status);
@@ -559,9 +585,17 @@
       panel.querySelector(".gamt-note").textContent = "loading…";
       rerender(false);
 
+      const allRuns = await collectAllPages(runs);
+      for (const run of allRuns) {
+        if (!rows.some((r) => r.run.id === run.id)) {
+          rows.push({ run, data: { params: {}, metrics: {}, hasSummary: false } });
+        }
+      }
+      rerender(false);
+
       const forceFetch = init.refetch === true;
       init.refetch = false;
-      await mapLimit(runs, FETCH_CONCURRENCY, async (run) => {
+      await mapLimit(allRuns, FETCH_CONCURRENCY, async (run) => {
         const data = await getRunData(repo, run, forceFetch);
         const row = rows.find((r) => r.run.id === run.id);
         if (row) row.data = data;
