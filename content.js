@@ -1,16 +1,11 @@
-// GitHub Actions Metrics Table
-//
-// On a repo's Actions list page, fetches each visible run's page (server-rendered,
-// same-origin, session cookies) and extracts step-summary tables whose header row
-// is `param | value` or `metric | value`. Aggregates them into one runs-by-metrics
-// comparison table injected above the run list.
+// GitHub Actions Metrics Table: fetches each visible run's page (server-
+// rendered, same-origin) and aggregates its param|value / metric|value
+// step-summary tables into one comparison table above the run list.
 (() => {
   "use strict";
 
   const PANEL_ID = "gamt-panel";
   const FETCH_CONCURRENCY = 4;
-
-  // ---------- storage (chrome.storage.local, with in-memory shim for page-context testing)
 
   const rawStorage =
     typeof chrome !== "undefined" && chrome.storage && chrome.storage.local
@@ -30,9 +25,8 @@
           };
         })();
 
-  // After the extension is reloaded/updated, content scripts already injected in open
-  // tabs lose their chrome.* bridge ("Extension context invalidated"). Swallow those
-  // errors here and let the lifecycle guard below retire this instance.
+  // an extension reload invalidates already-injected scripts' chrome.* bridge;
+  // swallow those errors and let contextAlive() retire this instance
   const storage = {
     get: async (keys) => {
       try {
@@ -44,16 +38,12 @@
     set: async (obj) => {
       try {
         await rawStorage.set(obj);
-      } catch {
-        /* context gone — nothing to persist to */
-      }
+      } catch {}
     },
     remove: async (keys) => {
       try {
         await rawStorage.remove(keys);
-      } catch {
-        /* context gone */
-      }
+      } catch {}
     },
   };
 
@@ -81,8 +71,6 @@
 
   const saveSettings = (repo, s) => storage.set({ [settingsKey(repo)]: s });
 
-  // ---------- page detection & run collection
-
   function currentRepo() {
     const m = location.pathname.match(/^\/([^/]+)\/([^/]+)\/actions(\/workflows\/[^/]+)?\/?$/);
     return m ? `${m[1]}/${m[2]}` : null;
@@ -96,7 +84,6 @@
       if (!m) continue;
       const title = a.textContent.trim();
       if (!title || runs.has(m[1])) continue;
-      // status lives on the run row's icon aria-label; stay inside the row container
       let status = "";
       const row = a.closest("li") || a.closest('[class*="Box-row"]') || a.parentElement?.parentElement;
       const icon = row?.querySelector('svg[aria-label], [role="img"][aria-label]');
@@ -117,10 +104,7 @@
 
   const isTerminal = (status) => /success|fail|cancel|skip|completed|neutral|timed.out/i.test(status);
 
-  // ---------- run-page summary parsing
-
-  // Contract: a step-summary table whose header row is exactly [param|metric, value].
-  // Bold (**…**) metric rows mark the headline metrics — record them.
+  // contract: any table headed [param|metric, value]; bold rows = headline metrics
   function parseSummary(doc) {
     const out = { params: {}, metrics: {}, bold: [] };
     let found = false;
@@ -163,7 +147,7 @@
       bold: summary?.bold || [],
       hasSummary: !!summary,
     };
-    // summaries are written at the end of the run — immutable once the run is terminal
+    // summaries are immutable once the run is terminal
     if (summary || isTerminal(run.status)) await storage.set({ [key]: data });
     return data;
   }
@@ -182,9 +166,7 @@
     return out;
   }
 
-  // ---------- column selection & formatting
-
-  // Fallback headline heuristic when the summary bolds nothing: task-level keys only.
+  // fallback headline heuristic when the summary bolds nothing
   const isHeadlineKey = (key) => {
     const seg = key.split(".");
     return seg.length <= 2 || seg[0] === seg[1];
@@ -207,7 +189,6 @@
         const v = r.data.metrics[k];
         return v !== undefined && v.trim() !== "" && Number.isFinite(Number(v));
       });
-    // headline = bold (**…**) in any run's summary; heuristic fallback if nothing is bolded
     const bold = new Set(rows.flatMap((r) => r.data.bold || []));
     const isHeadline = bold.size ? (k) => bold.has(k) : isHeadlineKey;
     return allKeys.filter(
@@ -215,7 +196,7 @@
     );
   }
 
-  // `mmlu.mmlu.acc,none` -> `mmlu acc,none` (full key stays in the tooltip)
+  // "mmlu.mmlu.acc,none" -> "mmlu acc,none"; full key stays in the tooltip
   function columnLabel(key) {
     const seg = key.split(".");
     return seg.length >= 2 && seg[0] === seg[1] ? [seg[0], ...seg.slice(2)].join(" ") : key;
@@ -226,7 +207,6 @@
     return v;
   }
 
-  // ISO timestamp -> "2026-07-28 09:38" in local time
   function formatDate(iso) {
     if (!iso) return "";
     const d = new Date(iso);
@@ -264,8 +244,6 @@
     return span;
   }
 
-  // ---------- rendering
-
   function el(tag, attrs = {}, children = []) {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -277,14 +255,13 @@
     return node;
   }
 
-  // Per-column show/hide overrides (from the columns dropdown) win over the toggles/filter.
-  // Param overrides are namespaced "param:<key>" so they can't collide with metric keys.
+  // dropdown overrides win over toggles/filter; param overrides are
+  // namespaced "param:", fixed columns "col:", to dodge metric-key collisions
   function effectiveColumns(rows, settings) {
     const paramKeys = [...new Set(rows.flatMap((r) => Object.keys(r.data.params)))].sort();
     const allMetricKeys = [...new Set(rows.flatMap((r) => Object.keys(r.data.metrics)))].sort();
     const base = new Set(selectMetricColumns(allMetricKeys, settings, rows));
     const ov = settings.overrides || {};
-    // fixed columns (branch/date/avg) are hideable too, via "col:" override keys
     const FIXED = ["branch", "date", "avg"];
     const show = Object.fromEntries(FIXED.map((k) => [k, ov[`col:${k}`] ?? true]));
     return {
@@ -303,7 +280,7 @@
   function buildTable(rows, settings, onSort) {
     const { paramKeys, allMetricKeys, metricKeys, show } = effectiveColumns(rows, settings);
 
-    // per-run mean over the visible numeric metric values
+    // per-run mean of the visible numeric metric values
     const avg = new Map();
     for (const r of rows) {
       const nums = metricKeys
@@ -355,7 +332,7 @@
       const a = avg.get(run.id);
       return el("tr", {}, [
         el("td", { class: "gamt-sticky-col" }, [
-          // flex goes on an inner wrapper — flex on the td itself breaks table-cell layout
+          // flex lives on a wrapper: flex on the td breaks table-cell layout
           el("span", { class: "gamt-run-cell" }, [
             statusIcon(run.status),
             el("a", { class: "gamt-run-link", href: run.url, text: run.title, title: run.title }),
@@ -397,8 +374,7 @@
     return { table: el("table", { class: "gamt-table" }, [el("thead", {}, [header]), el("tbody", {}, body)]), note };
   }
 
-  // Dropdown listing every column, included first then by name, with show/hide checkboxes.
-  // The list is (re)built on open so items don't jump around while being toggled.
+  // list is (re)built on open so items don't jump around while being toggled
   function buildColumnsDropdown(repo, settings, rerender, getColumns) {
     const menu = el("div", { class: "gamt-menu" });
     const dropdown = el("details", { class: "gamt-dropdown" }, [
@@ -523,15 +499,12 @@
     return panel;
   }
 
-  // ---------- orchestration
-
   let lastPageKey = "";
   let building = false;
 
   async function init(force) {
     if (!contextAlive()) {
-      // a newer copy of this script owns the page now — retire quietly
-      clearInterval(pollTimer);
+      clearInterval(pollTimer); // a newer script copy owns the page now
       return;
     }
     const repo = currentRepo();
@@ -599,7 +572,7 @@
     }
   }
 
-  // GitHub soft-navigates (Turbo); also poll cheaply for list updates the events miss.
+  // GitHub soft-navigates (Turbo); the interval catches what the events miss
   document.addEventListener("turbo:load", () => init(false));
   document.addEventListener("turbo:render", () => init(false));
   window.addEventListener("popstate", () => init(false));
