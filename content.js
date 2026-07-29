@@ -62,6 +62,7 @@
         numericOnly: true,
         filter: "",
         overrides: {},
+        colWidths: {},
         open: true,
         sortKey: "",
         sortDir: 1,
@@ -309,7 +310,7 @@
     };
   }
 
-  function buildTable(rows, settings, onSort) {
+  function buildTable(rows, settings, onSort, onColResize) {
     const { paramKeys, allMetricKeys, metricKeys, show } = effectiveColumns(rows, settings);
 
     // per-run mean of the visible numeric metric values
@@ -343,13 +344,77 @@
       });
     }
 
-    const th = (key, label, cls) =>
-      el("th", {
+    // width goes on th AND every td of the column: td max-width must follow or
+    // the default 320px cap fights the drag (ellipsis needs max-width on cells)
+    const setW = (cell, w) => {
+      if (cell) cell.style.width = cell.style.minWidth = cell.style.maxWidth = w ? `${w}px` : "";
+    };
+
+    let suppressSort = false; // a drag's trailing click must not toggle the sort
+
+    function resizer(key, thEl) {
+      const applyColumn = (w) => {
+        setW(thEl, w);
+        const i = thEl.cellIndex;
+        for (const tr of thEl.closest("table").tBodies[0].rows) setW(tr.cells[i], w);
+      };
+      const handle = el("span", {
+        class: "gamt-resizer",
+        title: "drag to resize, double-click to auto-size",
+        onclick: (e) => e.stopPropagation(),
+        ondblclick: (e) => {
+          e.stopPropagation();
+          applyColumn(null);
+          onColResize(key, null);
+        },
+      });
+      handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startW = thEl.getBoundingClientRect().width;
+        let width = 0;
+        let raf = 0;
+        handle.setPointerCapture(e.pointerId);
+        handle.classList.add("gamt-resizing");
+        const move = (ev) => {
+          width = Math.min(2000, Math.max(48, Math.round(startW + ev.clientX - startX)));
+          if (!raf) raf = requestAnimationFrame(() => ((raf = 0), applyColumn(width)));
+        };
+        const up = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+          handle.classList.remove("gamt-resizing");
+          if (raf) cancelAnimationFrame(raf);
+          if (width) {
+            applyColumn(width);
+            onColResize(key, width);
+            suppressSort = true;
+            setTimeout(() => (suppressSort = false), 0);
+          }
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      });
+      return handle;
+    }
+
+    const th = (key, label, cls) => {
+      const node = el("th", {
         text: label + (settings.sortKey === key ? (settings.sortDir === 1 ? " ▲" : " ▼") : ""),
         title: key === "run" ? "sort by run name" : key,
         class: cls || "",
-        onclick: () => onSort(key),
+        "data-key": key,
+        onclick: () => {
+          if (!suppressSort) onSort(key);
+        },
       });
+      node.appendChild(resizer(key, node));
+      return node;
+    };
 
     const header = el("tr", {}, [
       th("run", "run", "gamt-sticky-col"),
@@ -397,6 +462,13 @@
           return el("td", { text: v === undefined ? "" : formatValue(v), title: v === undefined ? "" : `${k} = ${v}` });
         }),
       ]);
+    });
+
+    [...header.children].forEach((thEl, i) => {
+      const w = settings.colWidths[thEl.dataset.key];
+      if (!w) return;
+      setW(thEl, w);
+      for (const tr of body) setW(tr.cells[i], w);
     });
 
     const note =
@@ -565,20 +637,32 @@
           init(true);
           return;
         }
-        const { table, note } = buildTable(rows, settings, (key) => {
-          // cycle: ascending -> descending -> unsorted
-          if (settings.sortKey !== key) {
-            settings.sortKey = key;
-            settings.sortDir = 1;
-          } else if (settings.sortDir === 1) {
-            settings.sortDir = -1;
-          } else {
-            settings.sortKey = "";
-            settings.sortDir = 1;
+        const { table, note } = buildTable(
+          rows,
+          settings,
+          (key) => {
+            // cycle: ascending -> descending -> unsorted
+            if (settings.sortKey !== key) {
+              settings.sortKey = key;
+              settings.sortDir = 1;
+            } else if (settings.sortDir === 1) {
+              settings.sortDir = -1;
+            } else {
+              settings.sortKey = "";
+              settings.sortDir = 1;
+            }
+            saveSettings(repo, settings);
+            rerender(false);
+          },
+          // drag applies live in buildTable; here we only persist (null = reset)
+          (key, width) => {
+            const cw = { ...settings.colWidths };
+            if (width == null) delete cw[key];
+            else cw[key] = width;
+            settings.colWidths = cw;
+            saveSettings(repo, settings);
           }
-          saveSettings(repo, settings);
-          rerender(false);
-        });
+        );
         const scroll = panel.querySelector(".gamt-scroll");
         scroll.replaceChildren(table);
         panel.querySelector(".gamt-note").textContent = note;

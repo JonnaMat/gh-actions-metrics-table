@@ -189,6 +189,23 @@
   user-select: none;
 }
 
+/* absolutely positioned against the th (sticky = positioned); sits over the
+   right padding so grabbing the edge resizes instead of sorting */
+.gamt-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+}
+.gamt-resizer:hover,
+.gamt-resizer.gamt-resizing {
+  box-shadow: inset -2px 0 0 var(--fgColor-accent, #0969da);
+}
+
 .gamt-table tbody tr:hover td {
   background: var(--bgColor-muted, #f6f8fa);
 }

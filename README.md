@@ -22,4 +22,6 @@ GitHub session — no token.
 - **columns ▾**: searchable show/hide per column (basic / params / metrics
   sections, included first); overrides win over toggles and filter.
 - **filter box**: regex over all metric keys, overrides the toggles.
+- Drag a header's right edge to resize a column (double-click the edge to
+  auto-size); widths persist per repo.
 - Completed runs cached in `chrome.storage.local`; settings persist per repo.
